@@ -34,7 +34,7 @@ All seven handlers live in `OrdersController` (`apps/api/src/modules/orders/orde
 | Authentication | None enforced (no `ApiKeyGuard`) | `apps/api/src/modules/orders/orders.controller.ts` |
 | Required scope | None (no `ScopeGuard` / `@Scopes`) | `apps/api/src/modules/orders/orders.controller.ts` |
 | Rate limiting | Yes — global `RateLimitGuard` via `APP_GUARD`, 100 requests per 60-second window | `apps/api/src/app.module.ts`, [Rate Limiting](/docs/api-reference/overview#rate-limiting) |
-| Correlation | `X-Request-ID` echoed in `meta.requestId` when sent | `CorrelationIdMiddleware`, `ResponseInterceptor` |
+| Correlation | `X-Request-ID` response header echoes a supplied ID or contains a generated UUID; wrapped responses also include `meta.requestId` | `CorrelationIdMiddleware`, `ResponseInterceptor` |
 | Request body | `create` (required), `cancel` (optional), `complete` (none) | `orders.controller.ts` |
 
 <Callout type="warning">
@@ -377,15 +377,15 @@ All filters are optional. Query keys are snake_case, as documented in [Filters](
     { name: "buyer_id", type: "string", required: false, description: "Return orders where this user is the buyer." },
     { name: "seller_id", type: "string", required: false, description: "Return orders where this user is the seller. Sending both buyer_id and seller_id returns orders where the user holds either role." },
     { name: "status", type: "OrderStatus", required: false, description: "Filter by one status. An unknown value is ignored rather than filtered on.", enum: ["ORDER_CREATED", "FUNDS_RESERVED", "ESCROW_CREATING", "ESCROW_FUNDING", "ESCROW_FUNDED", "IN_PROGRESS", "RELEASE_REQUESTED", "RELEASED", "REFUND_REQUESTED", "REFUNDED", "DISPUTED", "CLOSED"] },
-    { name: "limit", type: "number", required: false, description: "Items per page. Values above 100 are capped at 100.", defaultValue: "20" },
-    { name: "cursor", type: "string", required: false, description: "The next_cursor from the previous page — an order ID, e.g. ord_xyz789. Omit for the first page." },
+    { name: "limit", type: "number", required: false, description: "Items per page." },
+    { name: "cursor", type: "string", required: false, description: "The nextCursor value from the previous response — an order ID, e.g. ord_xyz789. Omit for the first page." },
     { name: "created_after", type: "string", required: false, description: "ISO 8601 lower bound on createdAt." },
     { name: "created_before", type: "string", required: false, description: "ISO 8601 upper bound on createdAt." },
   ]}
 />
 
 <Callout type="note">
-  This list is **cursor-based**, not offset-based. There is no `page`, `pageSize`, `sort`, or `search` parameter on this endpoint — those appear only in the generic `docs/backend/api-design.md` template, not on any orders artifact. Page forward with `cursor` = the `next_cursor` you received.
+  This list is **cursor-based**, not offset-based. There is no `page`, `pageSize`, `sort`, or `search` parameter on this endpoint — those appear only in the generic `docs/backend/api-design.md` template, not on any orders artifact. Page forward with `cursor` = the `nextCursor` you received. Shared pagination behavior is documented in the [API Reference overview](/docs/api-reference/overview#pagination).
 </Callout>
 
 ### Response
@@ -395,50 +395,60 @@ All filters are optional. Query keys are snake_case, as documented in [Filters](
 <ResponseSchema
   label="List orders response"
   fields={[
-    { name: "data", type: "Order[]", required: true, description: "The page of orders. Each item is the order resource; relations are not expanded for every row, so read a single order for its escrow and milestones." },
-    { name: "data[].id", type: "string", required: true, description: "Order ID with the ord_ prefix." },
-    { name: "data[].status", type: "string", required: true, description: "Current order status.", enum: ["ORDER_CREATED", "FUNDS_RESERVED", "ESCROW_CREATING", "ESCROW_FUNDING", "ESCROW_FUNDED", "IN_PROGRESS", "RELEASE_REQUESTED", "RELEASED", "REFUND_REQUESTED", "REFUNDED", "DISPUTED", "CLOSED"] },
-    { name: "data[].buyerId", type: "string", required: true, description: "Buyer user ID." },
-    { name: "data[].sellerId", type: "string", required: true, description: "Seller user ID." },
-    { name: "data[].amount", type: "string", required: true, description: "Order amount as a decimal string." },
-    { name: "data[].currency", type: "string", required: true, description: "Currency code." },
-    { name: "data[].title", type: "string", required: true, description: "Order title." },
-    { name: "data[].createdAt", type: "string", required: true, description: "ISO 8601 creation timestamp." },
     {
-      name: "pagination",
+      name: "data",
       type: "object",
       required: true,
-      description: "Cursor pagination block for this page.",
+      description: "Controller result, wrapped by the global ResponseInterceptor.",
       children: [
-        { name: "has_more", type: "boolean", required: true, description: "True when another page exists. The SDK exposes this as hasMore." },
-        { name: "next_cursor", type: "string", required: false, description: "Pass as cursor on the next request. The SDK exposes this as nextCursor.", nullable: true },
+        { name: "success", type: "boolean", required: true, description: "True for a successful request." },
+        { name: "data", type: "Order[]", required: true, description: "The page of orders. Each item is the order resource; relations are not expanded for every row, so read a single order for its escrow and milestones." },
+        { name: "data[].id", type: "string", required: true, description: "Order ID with the ord_ prefix." },
+        { name: "data[].status", type: "string", required: true, description: "Current order status.", enum: ["ORDER_CREATED", "FUNDS_RESERVED", "ESCROW_CREATING", "ESCROW_FUNDING", "ESCROW_FUNDED", "IN_PROGRESS", "RELEASE_REQUESTED", "RELEASED", "REFUND_REQUESTED", "REFUNDED", "DISPUTED", "CLOSED"] },
+        { name: "data[].buyerId", type: "string", required: true, description: "Buyer user ID." },
+        { name: "data[].sellerId", type: "string", required: true, description: "Seller user ID." },
+        { name: "data[].amount", type: "string", required: true, description: "Order amount as a decimal string." },
+        { name: "data[].currency", type: "string", required: true, description: "Currency code." },
+        { name: "data[].title", type: "string", required: true, description: "Order title." },
+        { name: "data[].createdAt", type: "string", required: true, description: "ISO 8601 creation timestamp." },
+        { name: "hasMore", type: "boolean", required: true, description: "True when another page exists." },
+        { name: "nextCursor", type: "string", required: false, description: "Pass as cursor on the next request.", nullable: true },
       ],
     },
+    { name: "meta", type: "object", required: true, description: "Added by the ResponseInterceptor.", children: [
+      { name: "requestId", type: "string", required: false, description: "Correlation ID from X-Request-ID." },
+      { name: "timestamp", type: "string", required: true, description: "Response timestamp in ISO 8601 format." },
+    ] },
   ]}
   example={{
-    data: [
-      {
-        id: "ord_xyz789",
-        buyerId: "usr_buyer123",
-        sellerId: "usr_seller456",
-        amount: "5000.00",
-        currency: "USD",
-        status: "IN_PROGRESS",
-        title: "Mobile App Development",
-        createdAt: "2026-02-25T12:00:00.000Z"
-      },
-      {
-        id: "ord_abc123",
-        buyerId: "usr_buyer123",
-        sellerId: "usr_seller456",
-        amount: "2500.00",
-        currency: "USD",
-        status: "FUNDS_RESERVED",
-        title: "Landing page build",
-        createdAt: "2026-02-09T18:12:04.221Z"
-      }
-    ],
-    pagination: { has_more: true, next_cursor: "ord_abc123" }
+    data: {
+      success: true,
+      data: [
+        {
+          id: "ord_xyz789",
+          buyerId: "usr_buyer123",
+          sellerId: "usr_seller456",
+          amount: "5000.00",
+          currency: "USD",
+          status: "IN_PROGRESS",
+          title: "Mobile App Development",
+          createdAt: "2026-02-25T12:00:00.000Z"
+        },
+        {
+          id: "ord_abc123",
+          buyerId: "usr_buyer123",
+          sellerId: "usr_seller456",
+          amount: "2500.00",
+          currency: "USD",
+          status: "FUNDS_RESERVED",
+          title: "Landing page build",
+          createdAt: "2026-02-09T18:12:04.221Z"
+        }
+      ],
+      hasMore: true,
+      nextCursor: "ord_abc123"
+    },
+    meta: { requestId: "req_1ab90c", timestamp: "2026-02-25T12:00:00.404Z" }
   }}
 />
 
@@ -465,7 +475,7 @@ All filters are optional. Query keys are snake_case, as documented in [Filters](
 curl "http://localhost:4000/api/v1/orders?status=IN_PROGRESS&buyer_id=usr_buyer123&limit=20" \\
   -H "Authorization: Bearer ohk_live_xxxxxxxxxxxxxxxxxxxxxxxx"
 
-# Next page — the cursor is the next_cursor from the previous response
+# Next page — the cursor is the nextCursor from the previous response
 curl "http://localhost:4000/api/v1/orders?status=IN_PROGRESS&buyer_id=usr_buyer123&limit=20&cursor=ord_abc123" \\
   -H "Authorization: Bearer ohk_live_xxxxxxxxxxxxxxxxxxxxxxxx"`
     },

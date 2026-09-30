@@ -28,7 +28,7 @@ The three **resolution endpoints** decide how escrowed funds leave a funded orde
 | Authentication | None enforced (no `ApiKeyGuard`) | `resolution.controller.ts` |
 | Required scope | None (no `ScopeGuard` / `@Scopes`) | `resolution.controller.ts` |
 | Rate limiting | Yes — global `RateLimitGuard` via `APP_GUARD` | `apps/api/src/app.module.ts` |
-| Correlation | `X-Request-ID` echoed in `meta.requestId` when sent | `CorrelationIdMiddleware`, `ResponseInterceptor` |
+| Correlation | `X-Request-ID` response header echoes a supplied ID or contains a generated UUID; wrapped responses also include `meta.requestId` | `CorrelationIdMiddleware`, `ResponseInterceptor` |
 
 <Callout type="warning">
   The examples below still send `Authorization: Bearer …` because that is how every other reference in these docs is written — and you should send it, since a future release may add `ApiKeyGuard` to this controller. Today the header is simply ignored by these three routes.

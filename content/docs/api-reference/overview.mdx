@@ -34,13 +34,13 @@ For full details on credential types, key lifecycle, and per-endpoint scopes, se
 | `Authorization` | Yes | `Bearer {api_key}` |
 | `Content-Type` | Yes (POST/PUT/PATCH) | `application/json` |
 | `Idempotency-Key` | Optional | UUID v4 for POST, PUT, and PATCH requests |
-| `X-Request-ID` | No | UUID for correlation/debugging |
+| `X-Request-ID` | No | Caller-provided correlation ID; if omitted, the Orchestrator generates a UUID |
 
 ### Response Headers
 
 | Header | Description |
 |--------|-------------|
-| `X-Request-ID` | Echo of request ID or auto-generated |
+| `X-Request-ID` | Always set to the supplied request ID or a generated UUID by [`CorrelationIdMiddleware`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/common/middleware/correlation-id.middleware.ts). Wrapped responses also include it in `meta.requestId`. |
 | `X-Idempotency-Key` | Echo of key if applied |
 | `X-RateLimit-Limit` | Request limit |
 | `X-RateLimit-Remaining` | Remaining requests |
@@ -48,30 +48,32 @@ For full details on credential types, key lifecycle, and per-endpoint scopes, se
 
 ## Response Format
 
-### Success Response
+The response envelope depends on the endpoint controller. The global `ResponseInterceptor` wraps ordinary handler results as `{ data, meta }`, but preserves some controller-wrapped responses and single-property `{ data }` responses. These are the current successful wire formats:
+
+| Endpoint group | Successful response envelope | Controller/source |
+| --- | --- | --- |
+| Ordinary handler results | `{ "data": <result>, "meta": { "requestId": "...", "timestamp": "...", "pagination?": { ... } } }` | Global [`ResponseInterceptor`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/common/interceptors/response.interceptor.ts), registered in [`main.ts`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/main.ts) |
+| Orders, resolution, and disputes | `{ "data": { "success": true, "data": <resource> }, "meta": { "requestId": "...", "timestamp": "..." } }` | [`OrdersController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/orders/orders.controller.ts), [`ResolutionController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/resolution/resolution.controller.ts), and [`DisputesController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/disputes/disputes.controller.ts) |
+| Cursor-paginated orders | `{ "data": { "success": true, "data": [...], "hasMore": true, "nextCursor": "..." }, "meta": { "requestId": "...", "timestamp": "..." } }` | [`OrdersController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/orders/orders.controller.ts) |
+| Cursor-paginated top-ups and withdrawals | `{ "data": { "data": [...], "hasMore": true, "nextCursor": "..." }, "meta": { "requestId": "...", "timestamp": "..." } }` | [`TopUpsController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/topups/topups.controller.ts) and [`WithdrawalsController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/withdrawals/withdrawals.controller.ts) |
+| Audit logs | `{ "data": { "data": [...], "pagination": { "hasMore": true, "nextCursor": "..." } }, "meta": { "requestId": "...", "timestamp": "..." } }` | [`AuditController`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/modules/audit-logs/audit.controller.ts) |
+| Controllers that return only `{ data: ... }` | `{ "data": <result> }` (the interceptor leaves this existing one-property envelope unchanged) | [`ResponseInterceptor`](https://github.com/OFFER-HUB/OFFER-HUB/blob/main/apps/api/src/common/interceptors/response.interceptor.ts) |
+
+`meta.requestId` may be absent on an already-wrapped `{ data: ... }` response. Use the `X-Request-ID` **response header**, which is always present, for request correlation. The optional `meta.pagination` is added only when the handler returns `{ items, pagination: { page, limit, total } }`; this is separate from cursor pagination below. Error responses use the single-level `{ "error": { "code", "message", "details?" } }` envelope described in [Error Codes](/docs/api-reference/errors).
 
 ```json
 {
-  "id": "ord_abc123",
-  "status": "ORDER_CREATED",
-  "amount": "100.00",
-  "currency": "USD",
-  "created_at": "2026-01-12T10:00:00.000Z",
-  "updated_at": "2026-01-12T10:00:00.000Z"
+  "data": {
+    "success": true,
+    "data": ["..."],
+    "hasMore": true,
+    "nextCursor": "ord_abc123"
+  },
+  "meta": { "requestId": "req_7f3a", "timestamp": "2026-09-30T08:00:00.000Z" }
 }
 ```
 
-### List Response
-
-```json
-{
-  "data": ["..."],
-  "pagination": {
-    "has_more": true,
-    "next_cursor": "ord_abc123"
-  }
-}
-```
+Cursor pagination is defined once in [Pagination](#pagination); it is not a universal `pagination` response object.
 
 ### Error Response
 
@@ -151,15 +153,10 @@ Creates a new escrow contract between buyer and seller. Funds are held until rel
 ```json
 {
   "data": {
-    "escrow_id": "esc_01JKL",
-    "order_id": "ord_abc123",
-    "buyer_id": "usr_01ABC",
-    "seller_id": "usr_02ABC",
-    "amount": "2500.00",
-    "currency": "USD",
-    "status": "PENDING",
-    "created_at": "2026-02-01T14:00:00.000Z"
-  }
+    "success": true,
+    "data": { "id": "ord_abc123", "status": "ESCROW_CREATING", "escrow": { "...": "escrow resource" } }
+  },
+  "meta": { "requestId": "req_7f3a", "timestamp": "2026-09-30T08:00:00.000Z" }
 }
 ```
 
@@ -184,11 +181,10 @@ Releases held funds from an escrow to the seller upon project completion. See [R
 ```json
 {
   "data": {
-    "escrow_id": "esc_01JKL",
-    "status": "RELEASED",
-    "released_amount": "2500.00",
-    "released_at": "2026-02-10T16:00:00.000Z"
-  }
+    "success": true,
+    "data": { "id": "ord_abc123", "status": "CLOSED", "escrow": { "status": "RELEASED" } }
+  },
+  "meta": { "requestId": "req_7f3a", "timestamp": "2026-09-30T08:00:00.000Z" }
 }
 ```
 
@@ -224,19 +220,24 @@ Returns the user's current balance across all currencies.
 {
   "data": {
     "user_id": "usr_abc123",
-    "balances": [
-      { "currency": "USD", "available": "1250.00", "held": "200.00" },
-      { "currency": "XLM", "available": "5000.00", "held": "0.00" }
-    ]
-  }
+    "available": "1250.00",
+    "reserved": "200.00",
+    "currency": "USD",
+    "total": "1450.00",
+    "updated_at": "2026-09-30T08:00:00.000Z"
+  },
+  "meta": { "requestId": "req_7f3a", "timestamp": "2026-09-30T08:00:00.000Z" }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `currency` | string | Currency code |
+| `user_id` | string | User whose balance is returned |
 | `available` | string | Spendable balance |
-| `held` | string | Balance locked in escrows |
+| `reserved` | string | Balance reserved for active orders |
+| `currency` | string | Currency code |
+| `total` | string | `available` plus `reserved` |
+| `updated_at` | string | ISO 8601 timestamp of the latest balance update |
 
 ### Get Deposit Address
 
@@ -291,7 +292,7 @@ Returns withdrawal status and details.
 
 ## Pagination
 
-List endpoints support cursor-based pagination:
+Cursor-paginated list endpoints accept `limit` (default `20`, maximum `100`) and `cursor`. The supported list endpoints and filters vary by group; follow the linked endpoint reference before assuming an endpoint accepts these parameters.
 
 ### Request
 
@@ -302,19 +303,18 @@ GET /orders?limit=20&cursor=ord_xyz789
 | Param | Default | Max | Description |
 |-------|---------|-----|-------------|
 | `limit` | 20 | 100 | Items per page |
-| `cursor` | - | - | ID of last item from previous page |
+| `cursor` | - | - | `nextCursor` value returned for the previous page |
 
-### Response
+### Cursor response fields
 
 ```json
 {
-  "data": ["..."],
-  "pagination": {
-    "has_more": true,
-    "next_cursor": "ord_abc123"
-  }
+  "hasMore": true,
+  "nextCursor": "ord_abc123"
 }
 ```
+
+The fields appear alongside each endpoint's result: under the controller result for orders, top-ups, and withdrawals, and inside `pagination` for audit logs. See [Response Format](#response-format) for exact envelopes and the [Orders & Milestones Endpoints](/docs/api-reference/orders#get-apiv1orders) for the orders example. When `hasMore` is false, there is no next page; otherwise, send `nextCursor` as the next request's `cursor`.
 
 ## Filters
 
